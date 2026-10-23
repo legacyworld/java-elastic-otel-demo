@@ -1,0 +1,28 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.2.0'
+    id 'io.spring.dependency-management' version '1.1.0'
+}
+
+group = 'com.example'
+version = '1.0.0'
+sourceCompatibility = '17'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    implementation 'redis.clients:jedis'
+    implementation("co.elastic.otel:elastic-otel-javaagent:1.10.0")
+    implementation 'net.logstash.logback:logstash-logback-encoder:7.4'
+}
+configurations.all {
+    exclude group: 'io.lettuce', module: 'lettuce-core'
+}
+
+test {
+    useJUnitPlatform()
+}

@@ -1,0 +1,7 @@
+.terraform/
+*.tfstate*
+terraform.tfvars
+.env
+.gradle/
+bin/
+build/

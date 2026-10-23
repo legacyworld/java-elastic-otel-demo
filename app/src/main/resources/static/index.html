@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>App Service 障害シミュレーション デモ (Java/OTel)</title>
+
+    <!-- Bootstrap -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+
+    <style>
+        body { background-color: #f8f9fa; transition: background-color 0.5s ease; }
+        .result-container { max-height: 70vh; overflow-y: auto; }
+        .row-item { margin-bottom: 5px; padding: 10px; border-radius: 5px; border-left: 5px solid transparent; }
+
+        .bg-success-subtle { background-color: #d1e7dd; border-left-color: #198754; }
+        .bg-warning-subtle { background-color: #fff3cd; border-left-color: #ffc107; }
+        .bg-danger-subtle { background-color: #f8d7da; border-left-color: #dc3545; }
+        .bg-info-subtle { background-color: #cff4fc; border-left-color: #0dcaf0; }
+    </style>
+
+    <!-- 1. OpenTelemetry SDK の初期化 -->
+    <script type="module">
+        import * as api          from 'https://esm.sh/@opentelemetry/api@1.7.0';
+        import * as resources    from 'https://esm.sh/@opentelemetry/resources@1.19.0?deps=@opentelemetry/api@1.7.0';
+        import * as sdkTraceBase from 'https://esm.sh/@opentelemetry/sdk-trace-base@1.19.0?deps=@opentelemetry/api@1.7.0';
+        import * as sdkTraceWeb  from 'https://esm.sh/@opentelemetry/sdk-trace-web@1.19.0?deps=@opentelemetry/api@1.7.0';
+        import * as instrumentation from 'https://esm.sh/@opentelemetry/instrumentation@0.45.0?deps=@opentelemetry/api@1.7.0';
+        import * as instrFetch   from 'https://esm.sh/@opentelemetry/instrumentation-fetch@0.45.0?deps=@opentelemetry/api@1.7.0';
+        import * as instrDocLoad from 'https://esm.sh/@opentelemetry/instrumentation-document-load@0.34.0?deps=@opentelemetry/api@1.7.0';
+        import * as exporterOtlp from 'https://esm.sh/@opentelemetry/exporter-trace-otlp-http@0.45.0?deps=@opentelemetry/api@1.7.0';
+
+        const Resource = resources.Resource || resources.default?.Resource;
+        const WebTracerProvider = sdkTraceWeb.WebTracerProvider || sdkTraceWeb.default?.WebTracerProvider;
+        const BatchSpanProcessor = sdkTraceBase.BatchSpanProcessor || sdkTraceBase.default?.BatchSpanProcessor;
+        const StackContextManager = sdkTraceWeb.StackContextManager || sdkTraceWeb.default?.StackContextManager;
+        const OTLPTraceExporter = exporterOtlp.OTLPTraceExporter || exporterOtlp.default?.OTLPTraceExporter;
+        const registerInstrumentations = instrumentation.registerInstrumentations || instrumentation.default?.registerInstrumentations;
+        const FetchInstrumentation = instrFetch.FetchInstrumentation || instrFetch.default?.FetchInstrumentation;
+        const DocumentLoadInstrumentation = instrDocLoad.DocumentLoadInstrumentation || instrDocLoad.default?.DocumentLoadInstrumentation;
+
+        const provider = new WebTracerProvider({
+            resource: new Resource({
+                'service.name': 'java-status-api-frontend-aws',
+                'service.version': '2.0.0'
+            }),
+        });
+
+        // Elastic APM または Collector のエンドポイント
+        const collectorHost = window.location.hostname;
+        const exporter = new OTLPTraceExporter({
+            url: `http://${collectorHost}:4318/v1/traces`
+        });
+        provider.addSpanProcessor(new BatchSpanProcessor(exporter, {
+            scheduledDelayMillis: 3000,   // 3秒ごとに送信
+            maxExportBatchSize: 20,
+            maxQueueSize: 100,
+        }));
+
+        // ZoneContextManager は ESM 動的ロードでは zone.js が先行パッチできないため
+        // StackContextManager を使用する
+        provider.register({
+            contextManager: new StackContextManager(),
+        });
+
+        registerInstrumentations({
+            instrumentations: [
+                new FetchInstrumentation({
+                    propagateTraceHeaderCorsUrls: [ /.*\/api\/.*/ ],
+                    // ignoreUrls: [ /54\.238\.94\.229/ ],
+                    ignoreUrls: [ /:4318/ ],
+                    applyCustomAttributesOnSpan: (span, request) => {
+                        // トレースのスパンにユーザー名を付与
+                        span.setAttribute('user.name', window.currentUser || 'system');
+                        // /api/ へのリクエストは mizuho-card-service-aws への接続であることを明示
+                        const url = request ? (typeof request === 'string' ? request : (request.url || '')) : '';
+                        if (url.includes('/api/')) {
+                            span.setAttribute('peer.service', 'test-card-service');
+                        }
+                    }
+                }),
+            ],
+        });
+        console.log("OTel initialized.");
+    </script>
+</head>
+
+<body>
+
+<div class="container mt-4">
+    <h1 class="text-center mb-3">
+        App Service API 応答デモ
+        <span class="badge bg-primary fs-6" id="call-count">0</span>
+    </h1>
+
+    <h5 class="text-center mb-4">
+        Service Version:
+        <span id="service-version" class="badge bg-secondary">unknown</span>
+    </h5>
+
+    <div class="card shadow-sm mb-4">
+        <div class="card-body">
+            <h5 class="card-title">デモ概要 (自動アクセス中)</h5>
+            <p class="mb-2">
+                API <code>/api/status</code> を2秒ごとに呼び出しています。
+                以下の10名のユーザーをランダムにシミュレートし、OTel トレースを送信します。
+            </p>
+            <div id="user-pool" class="mb-3">
+                <!-- ユーザーリストをここに表示 -->
+            </div>
+            <ul class="mb-0 small">
+                <li><b>1.x系 (v1)</b>: 常に成功。Redisへの書き込みを実行。</li>
+                <li><b>2.x系 (v2)</b>: 設定に基づき <code>LATENCY</code> (遅延) や <code>ERROR</code> (高負荷) を発生。</li>
+            </ul>
+        </div>
+        <div id="build-info" class="card-footer text-muted small">
+            Commit: - / Deploy ID: -
+        </div>
+    </div>
+
+    <div class="result-container border p-3 bg-white shadow-sm">
+        <h5 class="mb-3">API Call History (Latest 50)</h5>
+        <div id="results-list"></div>
+    </div>
+</div>
+
+<script>
+// --- 設定 ---
+const USERS = ["Alice", "Bob", "Charlie", "David", "Eve", "Frank", "Grace", "Heidi", "Ivan", "Judy"];
+const resultsList = document.getElementById('results-list');
+const callCountElement = document.getElementById('call-count');
+const serviceVersionElement = document.getElementById('service-version');
+const buildInfoElement = document.getElementById('build-info');
+const userPoolElement = document.getElementById('user-pool');
+
+let callCount = 0;
+window.currentUser = USERS[0]; // OTelが参照するグローバル変数
+
+// ユーザープールのUI表示
+userPoolElement.innerHTML = USERS.map(u => `<span id="user-badge-${u}" class="badge border text-dark me-1">${u}</span>`).join('');
+
+function formatTimestamp(tsMillis) {
+    const date = new Date(tsMillis);
+    return date.toLocaleTimeString('ja-JP', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3
+    });
+}
+
+async function callApi() {
+    // 1. ランダムなユーザーの選択
+    const previousUser = window.currentUser;
+    window.currentUser = USERS[Math.floor(Math.random() * USERS.length)];
+    
+    // UI上のユーザーハイライト更新
+    if (previousUser) document.getElementById(`user-badge-${previousUser}`).className = "badge border text-dark me-1";
+    document.getElementById(`user-badge-${window.currentUser}`).className = "badge bg-dark text-white me-1";
+
+    callCount++;
+    callCountElement.textContent = callCount;
+
+    const startFetchTime = performance.now();
+
+    try {
+        const response = await fetch("/api/status", {
+            headers: { 'X-User-ID': window.currentUser || 'system','baggage': `user.name=${window.currentUser || 'system'}` }
+        });
+        const endFetchTime = performance.now();
+
+        let data = {};
+        if (response.status !== 204) {
+            data = await response.json();
+        }
+
+        const statusCode = response.status;
+        const outcome = data.outcome || "UNKNOWN";
+        const serverLatencyMs = parseFloat(data.latency_ms || 0);
+        const totalLatencyMs = endFetchTime - startFetchTime;
+        const serviceVersion = data.service_version || "unknown";
+
+        // UI表示更新
+        serviceVersionElement.textContent = serviceVersion;
+        buildInfoElement.innerText = `Commit: ${data.commit || 'unknown'} / Deploy ID: ${data.deploy || 'unknown'}`;
+
+        // 背景色変更（v2で赤っぽく）
+        document.body.style.backgroundColor = serviceVersion.startsWith("2") ? "#fff0f0" : "#f0fff4";
+
+        let bgColorClass, icon, outcomeBadgeClass;
+
+        if (statusCode === 200) {
+            if (outcome === 'SUCCESS') {
+                bgColorClass = 'bg-success-subtle';
+                icon = '✅';
+                outcomeBadgeClass = 'text-bg-success';
+            } else if (outcome === 'LATENCY') {
+                bgColorClass = 'bg-warning-subtle';
+                icon = '⚠️';
+                outcomeBadgeClass = 'text-bg-warning';
+            } else {
+                bgColorClass = 'bg-info-subtle';
+                icon = '❓';
+                outcomeBadgeClass = 'text-bg-info';
+            }
+        } else {
+            bgColorClass = 'bg-danger-subtle';
+            icon = '❌';
+            outcomeBadgeClass = 'text-bg-danger';
+        }
+
+        const detailMessage = data.message || data.error || `HTTP ${statusCode}`;
+
+        const newItem = `
+            <div class="row-item ${bgColorClass} d-flex justify-content-between align-items-center shadow-sm">
+                <div>
+                    <span class="fw-bold me-2">${icon} #${callCount}</span>
+                    <span class="badge text-bg-secondary me-2">User: ${window.currentUser}</span>
+                    <span class="badge bg-dark me-2">HTTP ${statusCode}</span>
+                    <span class="badge ${outcomeBadgeClass} me-2">${outcome}</span>
+                    <span class="badge text-bg-primary me-2">${serviceVersion}</span>
+                    <span class="text-muted small">${formatTimestamp(data.timestamp || Date.now())}</span>
+                    <br>
+                    <small class="text-dark">${detailMessage}</small>
+                </div>
+                <div class="text-end">
+                    <span class="fw-bold">${totalLatencyMs.toFixed(0)} ms</span>
+                    <br>
+                    <small class="text-muted">(Svr: ${serverLatencyMs.toFixed(0)} ms)</small>
+                </div>
+            </div>
+        `;
+
+        resultsList.insertAdjacentHTML('afterbegin', newItem);
+
+        // 履歴制限 (50件)
+        while (resultsList.children.length > 50) {
+            resultsList.removeChild(resultsList.lastChild);
+        }
+
+    } catch (error) {
+        console.error(error);
+        const newItem = `
+            <div class="row-item bg-dark text-white">
+                🚨 #${callCount} NETWORK ERROR (User: ${window.currentUser})<br>
+                <small>${error.message}</small>
+            </div>
+        `;
+        resultsList.insertAdjacentHTML('afterbegin', newItem);
+    }
+}
+
+// 2秒ごとに実行
+setInterval(callApi, 2000);
+// 初回実行
+callApi();
+
+</script>
+</body>
+</html>

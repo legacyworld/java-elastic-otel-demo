@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <appender name="jsonConsole" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp/>
+                <logLevel/>
+                <loggerName/>
+                <threadName/>
+                <message/>
+                <mdc/> <!-- trace_id, span_id, service.version 等が含まれる -->
+                <stackTrace/>
+            </providers>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="jsonConsole" />
+    </root>
+</configuration>

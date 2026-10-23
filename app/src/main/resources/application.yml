@@ -1,0 +1,12 @@
+server:
+  port: 8080
+
+spring:
+  redis:
+    client-type: jedis
+    host: localhost
+    port: 6379
+    timeout: 30s
+
+service:
+  version: 2.0.0
